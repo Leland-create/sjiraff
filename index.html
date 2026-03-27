@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="nb">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sjiraff Nikk 🦒</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #5BA3D9;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      user-select: none;
+    }
+    h1 {
+      color: #fff;
+      font-size: 2em;
+      margin-bottom: 12px;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.4);
+      letter-spacing: 2px;
+    }
+    #game {
+      cursor: pointer;
+      border-radius: 16px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+      display: block;
+    }
+    #hud {
+      display: flex;
+      gap: 40px;
+      align-items: center;
+      margin-top: 14px;
+    }
+    #score-box {
+      color: #fff;
+      font-size: 1.3em;
+      font-weight: bold;
+      text-shadow: 1px 1px 3px rgba(0,0,0,0.4);
+    }
+    #message {
+      color: #fff;
+      font-size: 1.1em;
+      text-shadow: 1px 1px 3px rgba(0,0,0,0.4);
+      min-height: 1.5em;
+    }
+  </style>
+</head>
+<body>
+  <h1>🦒 Sjiraff Nikk 🦒</h1>
+  <canvas id="game" width="800" height="540"></canvas>
+  <div id="hud">
+    <div id="score-box">Nikk: 0</div>
+    <div id="message">Klikk for å starte!</div>
+  </div>
+
+  <script>
+  (() => {
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score-box');
+    const msgEl = document.getElementById('message');
+
+    const W = canvas.width;
+    const H = canvas.height;
+    const GROUND = H - 55;   // y of grass top
+
+    // ── Giraffe anatomy constants ──────────────────────────────────────────
+    const A = {
+      legH: 85, legW: 14,
+      bodyW: 80, bodyH: 88,
+      neckW: 20, neckH: 138,
+      headRx: 27, headRy: 17,
+    };
+
+    // Colours
+    const C_GIRAFFE  = '#F5A623';
+    const C_DARK     = '#C47B0F';
+    const C_SPOT     = '#8B4513';
+    const C_OUTLINE  = '#7A3C0A';
+    const C_GRASS    = '#4CAF50';
+    const C_GRASS2   = '#388E3C';
+    const C_BALL     = '#E8E8E8';
+    const C_BALL_HLT = '#FFFFFF';
+    const C_BALL_SHD = '#AAAAAA';
+
+    // ── Build giraffe objects ──────────────────────────────────────────────
+    // Left giraffe faces RIGHT (dir = +1), right giraffe faces LEFT (dir = -1)
+    function makeGiraffe(bodyCenterX, dir) {
+      const bx  = bodyCenterX - A.bodyW / 2;
+      const by  = GROUND - A.legH - A.bodyH;
+      // Neck sits at the front of the body
+      const nx  = dir === 1 ? bx + A.bodyW - A.neckW : bx;
+      const ny  = by - A.neckH;
+      // Head extends forward from top of neck
+      const hx  = dir === 1 ? nx + A.neckW + A.headRx : nx - A.headRx;
+      const hy  = ny - A.headRy;
+      return { bx, by, nx, ny, hx, hy, dir };
+    }
+
+    const LG = makeGiraffe(160, 1);
+    const RG = makeGiraffe(640, -1);
+
+    const HEAD = {
+      left:  { x: LG.hx, y: LG.hy },
+      right: { x: RG.hx, y: RG.hy },
+    };
+
+    // ── Game state ─────────────────────────────────────────────────────────
+    // States: 'idle' | 'flying' | 'falling' | 'ground'
+    let state = 'idle';
+    let score = 0;
+
+    // Flying ball
+    let ballT     = 0;          // 0 → 1 arc progress
+    let ballFrom  = 'left';     // current sender
+    let ballSpeed = 0.0065;    // t-units per frame
+
+    // Click window: valid click range [CLICK_MIN, CLICK_MAX)
+    const CLICK_MIN = 0.82;
+    const CLICK_MAX = 1.08;
+
+    // Falling ball  (simple physics)
+    let fall = { x: 0, y: 0, vx: 0, vy: 0 };
+
+    // ── Helpers ────────────────────────────────────────────────────────────
+    function arcPos(from, to, t) {
+      const arcH = 90;
+      return {
+        x: from.x + (to.x - from.x) * t,
+        y: from.y + (to.y - from.y) * t - arcH * Math.sin(Math.PI * t),
+      };
+    }
+
+    function targetHead(from) {
+      return from === 'left' ? HEAD.right : HEAD.left;
+    }
+
+    // ── Drawing helpers ────────────────────────────────────────────────────
+    function ellipse(x, y, rx, ry, color) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function strokeEllipse(x, y, rx, ry, color, lw) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lw;
+      ctx.beginPath();
+      ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // ── Draw background ────────────────────────────────────────────────────
+    function drawBg() {
+      // Sky gradient
+      const sky = ctx.createLinearGradient(0, 0, 0, GROUND);
+      sky.addColorStop(0, '#4A90D9');
+      sky.addColorStop(1, '#87CEEB');
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, GROUND);
+
+      // Grass
+      ctx.fillStyle = C_GRASS;
+      ctx.fillRect(0, GROUND, W, H - GROUND);
+      ctx.fillStyle = C_GRASS2;
+      ctx.fillRect(0, GROUND, W, 7);
+
+      // Simple sun
+      ctx.fillStyle = 'rgba(255,240,100,0.85)';
+      ctx.beginPath();
+      ctx.arc(W - 70, 55, 35, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ── Draw one giraffe ───────────────────────────────────────────────────
+    function drawGiraffe(g) {
+      const { bx, by, nx, ny, hx, hy, dir } = g;
+      const frontLegBaseX = dir === 1 ? bx + A.bodyW - 26 : bx + 10;
+      const backLegBaseX  = dir === 1 ? bx + 8            : bx + A.bodyW - 26;
+
+      // Helper: draw one leg
+      function leg(x) {
+        // Upper leg
+        ctx.fillStyle = C_GIRAFFE;
+        ctx.fillRect(x, by + A.bodyH - 12, A.legW, A.legH + 12);
+        // Hoof
+        ctx.fillStyle = C_SPOT;
+        ctx.fillRect(x, GROUND - 8, A.legW, 8);
+      }
+
+      // ── legs ────
+      leg(frontLegBaseX);
+      leg(frontLegBaseX + 18);
+      leg(backLegBaseX);
+      leg(backLegBaseX + 18);
+
+      // ── tail ────
+      ctx.strokeStyle = C_GIRAFFE;
+      ctx.lineWidth = 5;
+      ctx.lineCap = 'round';
+      const tx = dir === 1 ? bx + 6 : bx + A.bodyW - 6;
+      ctx.beginPath();
+      ctx.moveTo(tx, by + 25);
+      ctx.quadraticCurveTo(tx - dir * 22, by + 55, tx - dir * 14, by + 78);
+      ctx.stroke();
+      // tuft
+      ctx.strokeStyle = C_SPOT;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(tx - dir * 14, by + 78);
+      ctx.lineTo(tx - dir * 18, by + 90);
+      ctx.stroke();
+
+      // ── body ────
+      ctx.fillStyle = C_GIRAFFE;
+      ctx.fillRect(bx, by, A.bodyW, A.bodyH);
+      ctx.strokeStyle = C_DARK;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(bx, by, A.bodyW, A.bodyH);
+
+      // body spots
+      function spot(ox, oy, w, h) {
+        ctx.fillStyle = C_SPOT;
+        ctx.fillRect(bx + ox, by + oy, w, h);
+      }
+      spot(18, 15, 20, 15);
+      spot(50, 38, 16, 18);
+      spot(22, 60, 18, 14);
+      spot(54, 14, 12, 10);
+
+      // ── neck ────
+      ctx.fillStyle = C_GIRAFFE;
+      ctx.fillRect(nx, ny, A.neckW, A.neckH);
+      ctx.strokeStyle = C_DARK;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(nx, ny, A.neckW, A.neckH);
+
+      // neck spots
+      ctx.fillStyle = C_SPOT;
+      ctx.fillRect(nx + 3, ny + 28, 10, 16);
+      ctx.fillRect(nx + 7, ny + 72, 9, 18);
+
+      // ── head ────
+      // base head oval
+      ellipse(hx, hy, A.headRx, A.headRy, C_GIRAFFE);
+      strokeEllipse(hx, hy, A.headRx, A.headRy, C_DARK, 1.5);
+
+      // snout extension
+      ellipse(hx + dir * A.headRx * 0.55, hy + 4, A.headRx * 0.52, A.headRy * 0.6, C_GIRAFFE);
+
+      // nostril
+      ellipse(hx + dir * (A.headRx * 0.9 + 4), hy + 8, 4, 3, C_DARK);
+
+      // eye
+      ellipse(hx + dir * 9, hy - 4, 5, 5, '#222');
+      ellipse(hx + dir * 10, hy - 5, 2, 2, '#fff');
+
+      // eyelash
+      ctx.strokeStyle = '#222';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(hx + dir * 12, hy - 7);
+      ctx.lineTo(hx + dir * 14, hy - 10);
+      ctx.stroke();
+
+      // ossicones (little horns)
+      ctx.fillStyle = C_SPOT;
+      ctx.fillRect(hx - 9, hy - A.headRy - 14, 5, 14);
+      ctx.fillRect(hx + 3, hy - A.headRy - 17, 5, 17);
+      ellipse(hx - 6,  hy - A.headRy - 14, 5, 5, C_DARK);
+      ellipse(hx + 5,  hy - A.headRy - 17, 5, 5, C_DARK);
+    }
+
+    // ── Draw click-window indicator ────────────────────────────────────────
+    function drawClickIndicator(headPos) {
+      const pulse = 0.45 + 0.45 * Math.sin(Date.now() / 120);
+      ctx.strokeStyle = `rgba(255,80,80,${pulse})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(headPos.x, headPos.y, 38, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.strokeStyle = `rgba(255,200,50,${pulse * 0.7})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(headPos.x, headPos.y, 46, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // ── Draw the ball ──────────────────────────────────────────────────────
+    function drawBall(x, y) {
+      // Drop shadow on ground
+      const shadowAlpha = Math.max(0, 1 - (y - 60) / (GROUND - 60));
+      if (shadowAlpha > 0) {
+        ctx.fillStyle = `rgba(0,0,0,${0.18 * shadowAlpha})`;
+        ctx.beginPath();
+        ctx.ellipse(x, GROUND - 3, 9 * shadowAlpha, 3 * shadowAlpha, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Ball body (soccer ball look)
+      ctx.fillStyle = C_BALL;
+      ctx.beginPath();
+      ctx.arc(x, y, 11, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#888';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Pentagon patches
+      ctx.fillStyle = '#333';
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = '#555';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
+        ctx.beginPath();
+        ctx.moveTo(x + Math.cos(a) * 5, y + Math.sin(a) * 5);
+        ctx.lineTo(x + Math.cos(a) * 11, y + Math.sin(a) * 11);
+        ctx.stroke();
+      }
+
+      // Highlight
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.beginPath();
+      ctx.ellipse(x - 3, y - 4, 4, 3, -0.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ── Draw game-over overlay ─────────────────────────────────────────────
+    function drawGameOver() {
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 42px Segoe UI, Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('Ballen er på bakken! 😢', W / 2, H / 2 - 24);
+
+      ctx.font = '26px Segoe UI, Arial';
+      ctx.fillText('Klikk for å spille igjen', W / 2, H / 2 + 24);
+      ctx.textAlign = 'left';
+    }
+
+    // ── Draw idle start screen ─────────────────────────────────────────────
+    function drawStart() {
+      ctx.fillStyle = 'rgba(0,0,0,0.30)';
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 36px Segoe UI, Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('Klikk for å starte! 🦒', W / 2, H / 2);
+      ctx.textAlign = 'left';
+    }
+
+    // ── Update ─────────────────────────────────────────────────────────────
+    function update() {
+      if (state === 'flying') {
+        ballT += ballSpeed;
+
+        if (ballT > CLICK_MAX) {
+          // Missed – switch to falling
+          const tgt = targetHead(ballFrom);
+          fall.x  = tgt.x;
+          fall.y  = tgt.y;
+          fall.vx = (tgt.x < W / 2 ? -1 : 1);   // drift away from canvas centre
+          fall.vy = 1;
+          state = 'falling';
+          msgEl.textContent = '❌ For sent! Prøv igjen.';
+        }
+      } else if (state === 'falling') {
+        fall.vy += 0.45;
+        fall.y  += fall.vy;
+        fall.x  += fall.vx;
+
+        if (fall.y >= GROUND - 11) {
+          fall.y  = GROUND - 11;
+          fall.vy = 0;
+          fall.vx = 0;
+          state = 'ground';
+        }
+      }
+    }
+
+    // ── Render ─────────────────────────────────────────────────────────────
+    function render() {
+      ctx.clearRect(0, 0, W, H);
+      drawBg();
+      drawGiraffe(LG);
+      drawGiraffe(RG);
+
+      if (state === 'idle') {
+        // Ball resting on left giraffe's head
+        drawBall(HEAD.left.x, HEAD.left.y - 13);
+        drawStart();
+
+      } else if (state === 'flying') {
+        const from = HEAD[ballFrom];
+        const to   = targetHead(ballFrom);
+        const pos  = arcPos(from, to, ballT);
+        drawBall(pos.x, pos.y);
+
+        // Show click window indicator
+        if (ballT >= CLICK_MIN) {
+          const tgt = targetHead(ballFrom);
+          drawClickIndicator(tgt);
+        }
+
+      } else if (state === 'falling') {
+        drawBall(fall.x, fall.y);
+
+      } else if (state === 'ground') {
+        drawBall(fall.x, fall.y);
+        drawGameOver();
+      }
+    }
+
+    // ── Main loop ──────────────────────────────────────────────────────────
+    function loop() {
+      update();
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    // ── Input ──────────────────────────────────────────────────────────────
+    canvas.addEventListener('click', () => {
+      if (state === 'idle') {
+        startFlight('left');
+        return;
+      }
+
+      if (state === 'ground') {
+        resetGame();
+        return;
+      }
+
+      if (state === 'flying') {
+        if (ballT >= CLICK_MIN && ballT < CLICK_MAX) {
+          // Successful head!
+          score++;
+          scoreEl.textContent = `Nikk: ${score}`;
+          // Speed up slightly each rally (max cap)
+          ballSpeed = Math.min(0.014, ballSpeed + 0.00035);
+
+          const newFrom = ballFrom === 'left' ? 'right' : 'left';
+          startFlight(newFrom);
+          msgEl.textContent = score === 1
+            ? '✅ Bra nikk! Klikk igjen!'
+            : `✅ Fantastisk! ${score} nikk på rad!`;
+        } else {
+          // Clicked but outside window – do nothing (don't penalise)
+        }
+      }
+    });
+
+    function startFlight(from) {
+      ballFrom  = from;
+      ballT     = 0;
+      state     = 'flying';
+      msgEl.textContent = '🎯 Klikk når ballen treffer hodet!';
+    }
+
+    function resetGame() {
+      state      = 'idle';
+      score      = 0;
+      ballSpeed = 0.0065;
+      scoreEl.textContent = 'Nikk: 0';
+      msgEl.textContent   = 'Klikk for å starte!';
+    }
+
+    // ── Boot ───────────────────────────────────────────────────────────────
+    loop();
+  })();
+  </script>
+</body>
+</html>
