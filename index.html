@@ -13,8 +13,10 @@
       align-items: center;
       justify-content: center;
       min-height: 100vh;
+      min-height: 100dvh;
       font-family: 'Segoe UI', Arial, sans-serif;
       user-select: none;
+      padding: 10px;
     }
     h1 {
       color: #fff;
@@ -22,18 +24,26 @@
       margin-bottom: 12px;
       text-shadow: 2px 2px 4px rgba(0,0,0,0.4);
       letter-spacing: 2px;
+      text-align: center;
     }
     #game {
       cursor: pointer;
       border-radius: 16px;
       box-shadow: 0 8px 32px rgba(0,0,0,0.35);
       display: block;
+      width: min(800px, calc(100vw - 20px));
+      aspect-ratio: 800 / 540;
+      touch-action: none;
+      -webkit-tap-highlight-color: transparent;
     }
     #hud {
       display: flex;
-      gap: 40px;
+      gap: 20px;
       align-items: center;
       margin-top: 14px;
+      flex-wrap: wrap;
+      justify-content: center;
+      width: min(800px, calc(100vw - 20px));
     }
     #score-box {
       color: #fff;
@@ -46,6 +56,13 @@
       font-size: 1.1em;
       text-shadow: 1px 1px 3px rgba(0,0,0,0.4);
       min-height: 1.5em;
+      text-align: center;
+    }
+    @media (max-width: 480px) {
+      h1 { font-size: 1.4em; margin-bottom: 8px; }
+      #score-box { font-size: 1.1em; }
+      #message { font-size: 0.95em; }
+      #hud { gap: 12px; margin-top: 8px; }
     }
   </style>
 </head>
@@ -432,7 +449,7 @@
     }
 
     // ── Input ──────────────────────────────────────────────────────────────
-    canvas.addEventListener('click', () => {
+    function handleInput() {
       if (state === 'idle') {
         startFlight('left');
         return;
@@ -460,7 +477,13 @@
           // Clicked but outside window – do nothing (don't penalise)
         }
       }
-    });
+    }
+
+    canvas.addEventListener('click', handleInput);
+    canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      handleInput();
+    }, { passive: false });
 
     function startFlight(from) {
       ballFrom  = from;
